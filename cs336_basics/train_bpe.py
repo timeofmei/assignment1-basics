@@ -6,6 +6,7 @@ from multiprocessing import Pool
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
+
 def bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
     with open(input_path, "rb") as f:
         num_processes = 12
@@ -19,20 +20,18 @@ def bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
             f.seek(start)
             chunk = f.read(end - start).decode("utf-8", errors="ignore")
             chunks.append(chunk)
-        
-        completed = 0
-        
+
         with Pool(processes=num_processes) as pool:
             for freq_table in pool.imap_unordered(pretokenization, [(chunk, special_tokens) for chunk in chunks]):
                 tables.append(freq_table)
-        
+
         for table in tables:
             for k, v in table.items():
                 init_freq_table[k] += v
-        # print(dict(sorted(init_freq_table.items(), key=lambda x: (x[1], x[0][0]), reverse=True)))
 
         vocab, merges = run_bpe(init_freq_table, vocab_size, special_tokens)
         return vocab, merges
+
 
 def pretokenization(args):
     chunk, special_tokens = args
@@ -44,6 +43,7 @@ def pretokenization(args):
             freq_table[byte_tuple] += 1
     return freq_table
 
+
 def find_chunk_boundaries(
     file: BinaryIO,
     desired_num_chunks: int,
@@ -53,7 +53,8 @@ def find_chunk_boundaries(
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
     """
-    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+    assert isinstance(split_special_token,
+                      bytes), "Must represent special token as a bytestring"
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
@@ -90,6 +91,7 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
+
 def split_with_special_tokens(corpus: str, special_tokens: list[str]):
     result = [corpus]
     for tok in special_tokens:
@@ -122,7 +124,7 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
 
         win_pair = successive_pairs[0][0]
         win_byte = b''.join(win_pair)
-        
+
         vocab[i] = win_byte
         merges.append(win_pair)
 
@@ -144,8 +146,9 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
         freq_table = freq_table_new
 
         i += 1
-    
+
     return vocab, merges
+
 
 if __name__ == "__main__":
     vocab, merges = bpe("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
