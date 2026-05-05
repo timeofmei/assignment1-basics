@@ -2,14 +2,14 @@ import regex as re
 import os
 from typing import BinaryIO
 from collections import defaultdict
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 
 def bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
     with open(input_path, "rb") as f:
-        num_processes = 12
+        num_processes = cpu_count()
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
         init_freq_table = defaultdict(int)
@@ -28,6 +28,9 @@ def bpe(input_path: str, vocab_size: int, special_tokens: list[str]):
         for table in tables:
             for k, v in table.items():
                 init_freq_table[k] += v
+
+        del tables
+        del chunks
 
         vocab, merges = run_bpe(init_freq_table, vocab_size, special_tokens)
         return vocab, merges
@@ -108,44 +111,65 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
         vocab[i+len(special_tokens)] = bytes([i])
     merges = []
     freq_table = dict(sorted(freq_table.items(), key=lambda x: (x[1], *x[0]), reverse=True))
+    successive_pairs = defaultdict(int)
+    for k in freq_table:
+        if len(k) <= 1:
+            continue
+        for first, second in zip(k, k[1:]):
+            successive_pairs[(first, second)] += freq_table[k]
 
     i = len(vocab.keys())
     while i < vocab_size:
-        successive_pairs = defaultdict(int)
-        for k in freq_table:
-            if len(k) <= 1:
-                continue
-            for first, second in zip(k, k[1:]):
-                successive_pairs[(first, second)] += freq_table[k]
-        successive_pairs = sorted(successive_pairs.items(), key=lambda x: (x[1], *x[0]), reverse=True)
-
-        if len(successive_pairs) < 1:
-            break
-
-        win_pair = successive_pairs[0][0]
+        win_pair_tuple = max(successive_pairs.items(), key=lambda x: (x[1], *x[0]))
+        win_pair = win_pair_tuple[0]
+        merges.append(win_pair)
         win_byte = b''.join(win_pair)
         vocab[i] = win_byte
-        merges.append(win_pair)
-        freq_table = merge(freq_table, win_pair, win_byte)
-
+        freq_table, successive_pairs = merge(freq_table, successive_pairs, win_pair, win_byte)
         i += 1
 
     return vocab, merges
 
 
-def merge(freq_table, win_pair, win_byte):
+def merge(freq_table, successive_pairs, win_pair, win_byte):
     freq_table_new = defaultdict(int)
     for k in freq_table:
-        k_new = []
-        j = 0
-        while j < len(k) - 1:
-            if (k[j], k[j+1]) == win_pair:
-                k_new.append(win_byte)
-                j += 2
-            else:
-                k_new.append(k[j])
-                j += 1
-        if j == len(k) - 1:
-            k_new.append(k[j])
-        freq_table_new[tuple(k_new)] = freq_table[k]
-    return freq_table_new
+        if win_pair in zip(k, k[1:]):
+            k_new = []
+            k_length = len(k)
+            k_freq = freq_table[k]
+            processed = [False] * k_length
+            i = 0
+            while i < k_length - 1:
+                if (k[i], k[i+1]) == win_pair:
+                    k_new.append(win_byte)
+                    if i > 0 and not processed[i-1] and not processed[i]:
+                        successive_pairs[(k[i-1], k[i])] -= k_freq
+
+                    if i + 1 < k_length - 1 and not processed[i+1] and not processed[i+2]:
+                        successive_pairs[(k[i+1], k[i+2])] -= k_freq
+                    processed[i] = True
+                    processed[i+1] = True
+                    i += 2
+                else:
+                    k_new.append(k[i])
+                    i += 1
+            if i == k_length - 1:
+                k_new.append(k[i])
+
+            k_new = tuple(k_new)
+            freq_table_new[k_new] = freq_table[k]
+            k_new_length = len(k_new)
+            processed = [False] * k_new_length
+            i = 0
+            for i in range(k_new_length):
+                if k_new[i] == win_byte:
+                    if i > 0 and not processed[i-1] and not processed[i]:
+                        successive_pairs[(k_new[i-1], k_new[i])] += k_freq
+                    if i < k_new_length - 1 and not processed[i] and not processed[i+1]:
+                        successive_pairs[(k_new[i], k_new[i+1])] += k_freq
+                    processed[i] = True
+        else:
+            freq_table_new[k] = freq_table[k]
+    del successive_pairs[win_pair]
+    return freq_table_new, successive_pairs

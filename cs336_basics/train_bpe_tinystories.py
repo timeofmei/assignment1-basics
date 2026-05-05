@@ -11,6 +11,6 @@ if __name__ == "__main__":
             vocab[k] = str(vocab[k])
         json.dump(vocab, f)
 
-    with open("data/merges-{FILENAME}.txt", "w") as f:
+    with open(f"data/merges-{FILENAME}.txt", "w") as f:
         for line in merges:
             f.write(f"{line[0]} {line[1]}\n")
