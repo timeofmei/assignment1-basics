@@ -103,11 +103,11 @@ def split_with_special_tokens(corpus: str, special_tokens: list[str]):
 
 
 def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_tokens: list[str]):
-    vocab = { i: special_tokens[i].encode("utf-8") for i in range(len(special_tokens))}
+    vocab = {i: special_tokens[i].encode("utf-8") for i in range(len(special_tokens))}
     for i in range(256):
         vocab[i+len(special_tokens)] = bytes([i])
     merges = []
-    freq_table = dict(sorted(freq_table.items(), key=lambda x: (x[1], x[0][0]), reverse=True))
+    freq_table = dict(sorted(freq_table.items(), key=lambda x: (x[1], *x[0]), reverse=True))
 
     i = len(vocab.keys())
     while i < vocab_size:
@@ -124,31 +124,28 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
 
         win_pair = successive_pairs[0][0]
         win_byte = b''.join(win_pair)
-
         vocab[i] = win_byte
         merges.append(win_pair)
-
-        freq_table_new = defaultdict(int)
-
-        for k in freq_table:
-            k_new = []
-            j = 0
-            while j < len(k) - 1:
-                if (k[j], k[j+1]) == win_pair:
-                    k_new.append(win_byte)
-                    j += 2
-                else:
-                    k_new.append(k[j])
-                    j += 1
-            if j == len(k) - 1:
-                k_new.append(k[j])
-            freq_table_new[tuple(k_new)] = freq_table[k]
-        freq_table = freq_table_new
+        freq_table = merge(freq_table, win_pair, win_byte)
 
         i += 1
 
     return vocab, merges
 
 
-if __name__ == "__main__":
-    vocab, merges = bpe("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
+def merge(freq_table, win_pair, win_byte):
+    freq_table_new = defaultdict(int)
+    for k in freq_table:
+        k_new = []
+        j = 0
+        while j < len(k) - 1:
+            if (k[j], k[j+1]) == win_pair:
+                k_new.append(win_byte)
+                j += 2
+            else:
+                k_new.append(k[j])
+                j += 1
+        if j == len(k) - 1:
+            k_new.append(k[j])
+        freq_table_new[tuple(k_new)] = freq_table[k]
+    return freq_table_new
