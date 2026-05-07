@@ -3,6 +3,7 @@ import json
 import ast
 import regex as re
 import heapq
+from functools import cache
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 PAT_BYTE = r"""(b(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")) (b(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))"""
@@ -15,7 +16,6 @@ class Tokenizer:
         self.merges = merges
         self.merges_priority = {v: i for i, v in enumerate(merges)}
         self.special_tokens = special_tokens
-        self.cached_result = {}
 
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
@@ -69,63 +69,53 @@ class Tokenizer:
                     new_result.append(byte_tuple)
         return new_result
 
+    @cache
     def _parse(self, result: tuple[bytes]) -> list[int]:
-        init_result = result
-        token_ids = self.cached_result.get(init_result)
-        if token_ids is not None:
-            return token_ids
         pair_priority = []
         heapq.heapify(pair_priority)
         recorded = set()
-        stop = len(result) <= 1
         pairs = list(zip(result[:-1], result[1:]))
-        next_scan = list(range(len(pairs)))
-        while not stop:
-            changing = False
-            for i in next_scan:
-                pair = pairs[i]
+        while len(result) > 1:
+            for pair in pairs:
                 if pair in recorded:
                     continue
                 recorded.add(pair)
                 priority = self.merges_priority.get(pair)
                 if priority is not None:
                     heapq.heappush(pair_priority, (priority, pair))
-                    changing = True
                 else:
                     continue
-            if not changing and len(pair_priority) == 0:
+            if len(pair_priority) == 0:
                 break
-            result, next_scan = self._merge(result, heapq.heappop(pair_priority)[1])
-            pairs = list(zip(result[:-1], result[1:]))
-            stop = len(result) <= 1
-
+            result, pairs = self._merge(result, heapq.heappop(pair_priority)[1])
         token_ids = [self.reverse_vocab[token] for token in result]
-        self.cached_result[init_result] = token_ids
         return token_ids
 
     def _merge(self, result, win_pair):
         new_result = []
+        next_pair = []
         i = 0
-        next_scan = []
         win_byte = b''.join(win_pair)
         while i < len(result) - 1:
             if win_pair == (result[i], result[i+1]):
                 new_result.append(win_byte)
+                if i > 0:
+                    if i > 1 and win_pair == (result[i-2], result[i-1]):
+                        next_pair.append((win_byte, win_byte))
+                    else:
+                        next_pair.append((result[i-1], win_byte))
+                if i < len(result) - 2:
+                    if i < len(result) - 3 and win_pair == (result[i+2], result[i+3]):
+                        next_pair.append((win_byte, win_byte))
+                    else:
+                        next_pair.append((win_byte, result[i+2]))
                 i += 2
             else:
                 new_result.append(result[i])
                 i += 1
         if i == len(result) - 1:
             new_result.append(result[i])
-        
-        new_result_length = len(new_result)
-        for i in range(new_result_length):
-            if new_result[i] == win_byte:
-                if i > 0:
-                    next_scan.append(i-1)
-                if i < new_result_length - 1:
-                    next_scan.append(i)
-        return new_result, next_scan
+        return new_result, next_pair
 
 
 if __name__ == "__main__":
