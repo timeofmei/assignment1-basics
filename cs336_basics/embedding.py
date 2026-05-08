@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import numpy as np
-from einops import einsum
 from jaxtyping import Float
 from torch import Tensor
 
@@ -19,9 +17,9 @@ class Embedding(nn.Module):
         std = 1
         nn.init.trunc_normal_(emb, mean=mean, std=std, a=-3, b=3)
         self.emb = nn.Parameter(emb, requires_grad=True)
-    
+
     def load_weights(self, weights: Float[Tensor, " vocab_size d_model"]):
         self.load_state_dict({"emb": weights}, strict=False)
-    
+
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         return self.emb[token_ids]
