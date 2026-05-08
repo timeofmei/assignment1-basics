@@ -1,7 +1,5 @@
 import regex as re
-import os
-from typing import BinaryIO
-from collections import defaultdict
+from collections import Counter
 from multiprocessing import Pool, cpu_count
 from util import find_chunk_boundaries
 
@@ -11,44 +9,41 @@ PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s
 def bpe(input_path: str, vocab_size: int, special_tokens: list[str], multi: bool = True):
     with open(input_path, "rb") as f:
         num_processes = cpu_count()
-        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        boundaries = find_chunk_boundaries(f, 60, b"<|endoftext|>")
 
-        init_freq_table = defaultdict(int)
+        init_freq_table = Counter()
 
         if multi:
             tables = []
-            chunks = []
+            chunk_positions = []
             for start, end in zip(boundaries[:-1], boundaries[1:]):
-                f.seek(start)
-                chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                chunks.append(chunk)
+                chunk_positions.append((start, end - start))
 
             with Pool(processes=num_processes) as pool:
-                for freq_table in pool.imap_unordered(pretokenization, [(chunk, special_tokens) for chunk in chunks]):
-                    tables.append(freq_table)
-
-            for table in tables:
-                for k, v in table.items():
-                    init_freq_table[k] += v
+                for freq_table in pool.imap_unordered(pretokenization, [(chunk_position, special_tokens, input_path, multi) for chunk_position in chunk_positions]):
+                    init_freq_table.update(freq_table)
 
             del tables
-            del chunks
         else:
             for start, end in zip(boundaries[:-1], boundaries[1:]):
                 f.seek(start)
                 chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                freq_table = pretokenization((chunk, special_tokens))
-                for k, v in freq_table.items():
-                    init_freq_table[k] += v
+                freq_table = pretokenization((chunk, special_tokens, input_path, multi))
+                init_freq_table.update(freq_table)
 
         vocab, merges = run_bpe(init_freq_table, vocab_size, special_tokens)
         return vocab, merges
 
 
 def pretokenization(args):
-    chunk, special_tokens = args
-    corpus = split_with_special_tokens(chunk, special_tokens)
-    freq_table = defaultdict(int)
+    chunk, special_tokens, input_path, multi = args
+    if multi:
+        with open(input_path, "rb") as f:
+            f.seek(chunk[0])
+            chunk = f.read(chunk[1]).decode("utf-8", errors="ignore")
+    special_pat = rf"""(?:{"|".join(map(re.escape, special_tokens))})"""
+    corpus = re.split(special_pat, chunk)
+    freq_table = Counter()
     for c in corpus:
         for p in re.finditer(PAT, c):
             byte_tuple = tuple(bytes([b]) for b in p.group().encode("utf-8"))
@@ -56,19 +51,12 @@ def pretokenization(args):
     return freq_table
 
 
-def split_with_special_tokens(corpus: str, special_tokens: list[str]):
-    special_pat = rf"""(?:{"|".join(map(re.escape, special_tokens))})"""
-    result = re.split(special_pat, corpus)
-    return result
-
-
-def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_tokens: list[str]):
+def run_bpe(freq_table: Counter[tuple[bytes], int], vocab_size: int,  special_tokens: list[str]):
     vocab = {i: special_tokens[i].encode("utf-8") for i in range(len(special_tokens))}
     for i in range(256):
         vocab[i+len(special_tokens)] = bytes([i])
     merges = []
-    freq_table = dict(sorted(freq_table.items(), key=lambda x: (x[1], *x[0]), reverse=True))
-    successive_pairs = defaultdict(int)
+    successive_pairs = Counter()
     for k in freq_table:
         if len(k) <= 1:
             continue
@@ -77,8 +65,8 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
 
     i = len(vocab.keys())
     while i < vocab_size:
-        win_pair_tuple = max(successive_pairs.items(), key=lambda x: (x[1], *x[0]))
-        win_pair = win_pair_tuple[0]
+        win_count = successive_pairs.most_common(1)[0][1]
+        win_pair = max(k for k, v in successive_pairs.items() if v == win_count)
         merges.append(win_pair)
         win_byte = b''.join(win_pair)
         vocab[i] = win_byte
@@ -88,8 +76,8 @@ def run_bpe(freq_table: dict[tuple[bytes], int], vocab_size: int,  special_token
     return vocab, merges
 
 
-def merge(freq_table, successive_pairs, win_pair, win_byte):
-    freq_table_new = defaultdict(int)
+def merge(freq_table: Counter[tuple[bytes], int], successive_pairs: Counter[tuple[bytes], int], win_pair: tuple[bytes], win_byte: bytes):
+    freq_table_new = Counter()
     for k in freq_table:
         if win_pair in zip(k, k[1:]):
             k_new = []
@@ -128,5 +116,5 @@ def merge(freq_table, successive_pairs, win_pair, win_byte):
                     processed[i] = True
         else:
             freq_table_new[k] = freq_table[k]
-    del successive_pairs[win_pair]
+    successive_pairs.pop(win_pair, None)
     return freq_table_new, successive_pairs
