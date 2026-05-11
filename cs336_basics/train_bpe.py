@@ -1,3 +1,4 @@
+import os
 import regex as re
 from collections import Counter
 from multiprocessing import Pool, cpu_count
@@ -6,7 +7,7 @@ from util import find_chunk_boundaries
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 
-def bpe(input_path: str, vocab_size: int, special_tokens: list[str], multi: bool = True):
+def bpe(input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str], multi: bool = True):
     with open(input_path, "rb") as f:
         num_processes = cpu_count()
         boundaries = find_chunk_boundaries(f, 60, b"<|endoftext|>")
@@ -51,7 +52,7 @@ def pretokenization(args):
     return freq_table
 
 
-def run_bpe(freq_table: Counter[tuple[bytes], int], vocab_size: int,  special_tokens: list[str]):
+def run_bpe(freq_table: Counter[tuple[bytes, bytes]], vocab_size: int,  special_tokens: list[str]):
     vocab = {i: special_tokens[i].encode("utf-8") for i in range(len(special_tokens))}
     for i in range(256):
         vocab[i+len(special_tokens)] = bytes([i])
@@ -76,7 +77,7 @@ def run_bpe(freq_table: Counter[tuple[bytes], int], vocab_size: int,  special_to
     return vocab, merges
 
 
-def merge(freq_table: Counter[tuple[bytes], int], successive_pairs: Counter[tuple[bytes], int], win_pair: tuple[bytes], win_byte: bytes):
+def merge(freq_table: Counter[tuple[bytes, bytes]], successive_pairs: Counter[tuple[bytes, bytes]], win_pair: tuple[bytes, bytes], win_byte: bytes):
     freq_table_new = Counter()
     for k in freq_table:
         if win_pair in zip(k, k[1:]):
